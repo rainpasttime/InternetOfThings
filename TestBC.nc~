@@ -1,0 +1,420 @@
+#include <printf.h>
+#include <Timer.h>
+module TestBC {
+	uses interface Boot;
+	uses interface Leds;
+	uses interface Packet;
+
+	uses interface AMSend;
+	uses interface Receive;
+	uses interface SplitControl as AMControl;
+	uses interface Timer<TMilli> as Timer0;   //周期性地发送自己的节点号，总共发送两次
+	uses interface Timer<TMilli> as Timer1;
+	//uses interface Timer<TMilli> as Timer2;
+}
+
+implementation {
+    //节点号
+	typedef nx_struct nodeMsg {
+		//节点号
+		nx_uint8_t node_id;
+	}nodeMsg;
+
+	//发送的最大节点号或者最小节点号
+	typedef nx_struct dataMsg {
+		nx_uint8_t data[10];    //存了数据
+		nx_bool mxmi;           //判断发送的是TRUE最大值，还是FLASE最小值
+		nx_bool renewmxmi;      //判断是否是最终的包
+	}dataMsg;
+
+	uint8_t data[50];      //存放单个节点号
+	uint8_t max[10];       
+	uint8_t min[10];
+	uint8_t middle[10];       //暂时存放比较自己的数组和收到的数组的比较结果
+	uint16_t counter = 1;     //收到的单个节点号的数目
+	uint16_t climited = 15;    //收到的包数大于15才进行整理
+	uint16_t sendnum = 2;       //发送次数
+	uint16_t prin = 0;          //
+	message_t pkt;
+	message_t pkt2;
+	bool busy = FALSE;
+	bool over = FALSE;
+	bool initmxmi = FALSE;     //
+	bool changed = FALSE;
+	uint16_t i;
+	uint16_t j;
+	uint16_t k;
+
+	uint16_t node_id;
+	bool pr_flag1 = FALSE;     
+	bool pr_flag2 = FALSE;
+	bool pr_flag3 = FALSE;
+	bool pr_flag4 = FALSE;
+	bool pr_flag5 = FALSE;
+	bool pr_flag6 = FALSE;
+	bool pr_flag7 = FALSE;
+	bool pr_flag8 = FALSE;
+	
+	bool max_flag = FALSE;
+	bool min_flag = FALSE;
+	
+
+	task void print()
+	{
+		if(pr_flag1) 
+		{
+			printf("brocasting my node id as %d\n",TOS_NODE_ID);
+			printfflush();
+			pr_flag1 = FALSE;
+		}
+		else if(pr_flag2) 
+		{
+			printf("sending max.\n");printfflush();
+			pr_flag2 = FALSE;
+		}
+		else if(pr_flag3) 
+		{
+			printf("sending min.\n");
+			printfflush();
+			pr_flag3 = FALSE;
+		}
+		else if(pr_flag4) 
+		{
+			printf("I have received max.\n");
+			printfflush();
+			pr_flag4 = FALSE;
+		}
+		else if(pr_flag5) 
+		{
+			printf("receive the useless node_id :%d\n",node_id);
+			printfflush();
+			pr_flag5 = FALSE;
+		}
+		else if(pr_flag6) 
+		{
+			printf("receive:%d\n",node_id);
+			printfflush();
+			pr_flag6 = FALSE;
+		}
+		else if(pr_flag7) 
+		{
+			printf("max:%d\n",max[i]);
+			printfflush();
+			pr_flag7 = FALSE;
+		}
+		else if(pr_flag8) 
+		{
+			printf("min:%d\n",min[i]);
+			printfflush();
+			pr_flag8 = FALSE;
+		}
+	}
+
+	event void Boot.booted() {
+		call Leds.led0On();
+		call AMControl.start();
+		if(TOS_NODE_ID!=0&&TOS_NODE_ID!=1){data[0] = TOS_NODE_ID;}
+
+		for(i=0;i<=9;i++)
+		{
+			min[i] = 255;
+			max[i] = 0;
+		}
+	}
+
+	event void AMControl.startDone(error_t err) {
+		if (err == TRUE)
+		{ call AMControl.start(); }
+		else {
+			if(TOS_NODE_ID!=0&&TOS_NODE_ID!=1) {
+				call Timer0.startPeriodic(600+(TOS_NODE_ID)%26*77);   				//发送自己的节点号
+				call Timer1.startPeriodic(3000);
+			}
+		}
+	}
+
+	event void Timer0.fired() {
+		if(!busy) {
+			nodeMsg* btrpkt = (nodeMsg*)(call Packet.getPayload(&pkt,sizeof(nodeMsg)));
+			if(btrpkt==NULL) { return; }
+			btrpkt->node_id = TOS_NODE_ID;
+			if (call AMSend.send(AM_BROADCAST_ADDR,&pkt,sizeof(nodeMsg)) == SUCCESS){ 
+                                busy = TRUE;
+				pr_flag1 = TRUE;
+				post print();
+				sendnum = sendnum-1;
+				if(sendnum<0)	
+					call Timer0.stop();
+ 			}
+		}
+	}
+	
+	event void Timer1.fired() {
+                uint8_t i2 =0;
+		printf("node ID: %d\n",TOS_NODE_ID);
+		printf("data: ");
+
+		for(i2=0;i2<counter;i2++){
+			printf(" %d ",data[i2]);
+		}
+		if(counter>15){
+			printf("\nmax: ");
+			for(i2=0;i2<10;i2++){
+				printf(" %d ",max[i2]);
+			}
+			printf("\nmin: ");
+			for(i2=0;i2<10;i2++){
+				printf(" %d ",min[i2]);
+			}
+		}
+	}
+
+	task void sentmax() {     //发送自己整理max数组
+		if(max_flag){
+			if(!busy) {
+				dataMsg* btrpkt2 = (dataMsg*)(call Packet.getPayload(&pkt,sizeof(dataMsg)));
+				if(btrpkt2==NULL) { return; }
+				for(i=0;i<=9;i++)      //
+					btrpkt2->data[i] = max[i];
+				btrpkt2->mxmi = TRUE;      
+				btrpkt2->renewmxmi = FALSE;
+				if(call AMSend.send(AM_BROADCAST_ADDR,&pkt,sizeof(dataMsg)) == SUCCESS){
+					max_flag = FALSE;
+					pr_flag2 = TRUE;
+					post print();
+					climited = climited + 1;
+				 }
+			}
+		}
+		
+	}
+
+	task void sentmin() {        //发送自己整理min数组
+		if(min_flag){
+			if(!busy) {
+				dataMsg* btrpkt2 = (dataMsg*)(call Packet.getPayload(&pkt2,sizeof(dataMsg)));
+				if (btrpkt2 == NULL) {
+					return;
+				}
+				for(i=0;i<=9;i++) {
+					btrpkt2->data[i] = min[i];
+				}
+				btrpkt2->mxmi = FALSE;
+				btrpkt2->renewmxmi = FALSE;
+				if(call AMSend.send(AM_BROADCAST_ADDR,&pkt2,sizeof(dataMsg)) == SUCCESS){
+					min_flag = FALSE;
+					pr_flag3 = TRUE;
+					post print();	
+				 }
+			}
+		}
+				
+	}
+
+	event void AMSend.sendDone(message_t* msg, error_t err) {
+		if(&pkt == msg) {
+			busy = FALSE;
+		}
+	}
+
+	event void AMControl.stopDone(error_t err) {}
+
+	event message_t* Receive.receive(message_t* msg,void* payload,uint8_t len) {
+		uint16_t t;
+		
+		if(len == sizeof(nodeMsg)) {		//receving the node id from other nodes except 0/1
+			bool node_flag = FALSE;
+			nodeMsg* btrpkt = (nodeMsg*)payload;
+			node_id = btrpkt->node_id;
+			
+			for(t= 0;t<counter;t++){      //接收之前收到的包
+				if(data[t]==node_id) {
+					pr_flag5 = TRUE;
+					post print();
+					return msg;
+				}
+			}
+			for(t=0;t<counter;t++){     //接收的节点号比数组里面值要小
+				if(node_id < data[t]){
+					for(j=counter;j>t;j--) {
+						data[j] = data[j-1]; 
+					}
+					data[j] = node_id;
+					counter = counter+1;
+					node_flag = TRUE;
+				}
+			}
+			if(!node_flag){
+				data[counter] = node_id;
+				counter = counter+1;
+			}
+			
+			
+			pr_flag6 = TRUE;
+			post print();
+	    
+			if(counter>15) {   //collect enough nodeids and ready to sent the max and min to compare with others
+				if(TOS_NODE_ID==0||TOS_NODE_ID==1) {    //如果当前节点是0或者1
+						prin++;
+						return msg;
+				}
+				if(initmxmi == FALSE){   //the first time to send the max min
+				   for(i = 9; i >= 0; i--){    // max
+						max[i] = data[counter-1-i];
+				    }
+					for(i = 0; i <= 9; i++){    // min
+						if(TOS_NODE_ID!=0&&TOS_NODE_ID!=1){
+								min[i] = data[i];
+						}
+						else min[i] = data[i+1];
+					}
+					initmxmi = TRUE;
+				}
+				else{       //第二次或者第三次发送最大值或者最小值数组
+					for(i = 0; i <= 9; i++){    // max
+						if(node_id == max[i]) break;      //查看新收到的ID是否已经存在在max数组里面
+						else if(node_id < max[i]) continue;
+						else{
+						  for(j = 9; j > i; j--){
+						  max[j] = max[j-1];
+						  }
+						  max[j] = node_id;
+						  break;
+						} 
+					}
+					for(i = 0; i <= 9; i++){    // min
+						if(node_id == min[i]) break;       //查看新收到的ID是否已经存在在max数组里面
+						else if(node_id > min[i]) continue;
+						else{
+						  if(node_id != 0 && node_id != 1){
+						for(j = 9; j > i; j--){
+							min[j] = min[j-1];
+						}
+						min[j] = node_id;
+						  }
+						  break;
+						}
+					}
+				}
+				post sentmax();				//max
+				post sentmin();
+			}
+			return msg;
+		}
+		else if(len == sizeof(dataMsg)) {                    //receive max or min
+			dataMsg* btrpkt = (dataMsg*)payload;
+			pr_flag4 = TRUE;
+			post print();
+			if((TOS_NODE_ID==0)&&(btrpkt->renewmxmi)&&(btrpkt->mxmi)) {
+				for(i=0,j=0,k=0;i<=9;i++)
+				{
+					if(max[j]>=btrpkt->data[k])
+					{
+						middle[i] = max[j];
+						j++;
+					}
+					else {
+						middle[i] = btrpkt->data[k];
+						k++;
+					}
+				}
+				for(i=0;i<=9;i++)
+				{ max[i] = middle[i]; }
+				prin++;
+				if(prin>4) {
+					for(i=0;i<=9;i++)
+					{ pr_flag7 = TRUE;
+						post print(); }
+				}
+			}
+			if((TOS_NODE_ID==1)&&(btrpkt->renewmxmi)&&(!btrpkt->mxmi)) {
+				for(i=0,j=0,k=0;i<=9;i++)
+				{
+					if(min[j]<=btrpkt->data[k])
+					{
+						middle[i] = min[j];
+						j++;
+					}
+					else {
+						middle[i] = btrpkt->data[k];
+						k++;
+					}
+				}
+				for(i=0;i<=9;i++)
+				{ min[i] = middle[i]; }
+				prin++;
+				if(prin>3) {
+					for(i=0;i<=9;i++)
+					{ pr_flag8 = TRUE;
+						post print(); }
+				}
+			}
+			if(counter>=climited) {//compare and give away the better,else do nothing
+				if(!btrpkt->mxmi) {		//receive min
+					for(i=0,j=0,k=0;i<=9;i++)
+					{
+						if(min[j]<=btrpkt->data[k])
+						{
+							middle[i] = min[j];
+							j++;
+						}
+						else {
+							middle[i] = btrpkt->data[k];
+							k++;
+						}
+					}
+					if(j != 10) {
+						for(i=0;i<=9;i++)
+							min[i] = middle[i];
+						if(!busy) {
+							dataMsg* btrpkt2 = (dataMsg*)(call Packet.getPayload(&pkt,sizeof(dataMsg)));
+							if(btrpkt2 == NULL) { return; }
+							for(i=0;i<=9;i++)
+								btrpkt2->data[i] = min[i];
+							btrpkt2->mxmi = FALSE;
+							btrpkt2->renewmxmi = TRUE;
+							if(call AMSend.send(AM_BROADCAST_ADDR,&pkt,sizeof(dataMsg)) == SUCCESS)
+								busy = TRUE;
+						}
+					}
+				}
+				else {						//receive max
+					for(i=0,j=0,k=0;i<=9;i++)
+					{
+						if(max[j]>=btrpkt->data[k])
+						{
+							middle[i] = max[j];
+							j++;
+						}
+						else {
+							middle[i] = btrpkt->data[k];
+							k++;
+						}
+					}
+					if(j != 10) {
+						for(i=0;i<=9;i++)
+							max[i] = middle[i];
+						if(!busy) {
+							dataMsg* btrpkt2 = (dataMsg*)(call Packet.getPayload(&pkt,sizeof(dataMsg)));
+							if(btrpkt2 == NULL) { return; }
+							for(i=0;i<=9;i++)
+								btrpkt2->data[i] = max[i];
+							btrpkt2->mxmi = TRUE;
+							btrpkt2->renewmxmi = TRUE;
+							if(call AMSend.send(AM_BROADCAST_ADDR,&pkt,sizeof(dataMsg)) == SUCCESS)
+								busy = TRUE;
+						}
+					}
+				}
+			}
+			else {							//don't have enough id
+				if((btrpkt->renewmxmi)&&(!over))		//transfer
+				{
+					if (call AMSend.send(AM_BROADCAST_ADDR,&pkt,sizeof(dataMsg)) == SUCCESS) { busy = TRUE; }
+					over = TRUE;
+				}
+			}
+		return msg;
+		}
+	}
+}
